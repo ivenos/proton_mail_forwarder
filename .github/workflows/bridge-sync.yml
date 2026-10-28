@@ -1,0 +1,85 @@
+name: Follow Proton Mail Bridge
+
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridge-sync
+
+jobs:
+  sync:
+    if: github.repository == 'ivenos/proton_mail_forwarder'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Follow the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh .github/scripts/bridge-sync.sh
+
+      - name: Commit to the bridge-sync branch
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet; then
+            echo "Already on the latest Proton Mail Bridge."
+            exit 0
+          fi
+          version=$(sed -n 's/^const bridgeVersion = "\(.*\)"$/\1/p' src/main.go)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "fix(deps): follow Proton Mail Bridge $version"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/bridge-sync
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: sync
+    if: needs.sync.outputs.sha != ''
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
+
+  merge:
+    needs: [sync, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Move main to the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.sync.outputs.sha }}
+        run: |
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/main" -f sha="$SHA" -F force=false
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/bridge-sync"
+
+  release:
+    needs: merge
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/release.yml
+    secrets: inherit

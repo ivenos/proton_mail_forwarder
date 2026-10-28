@@ -1,0 +1,47 @@
+name: Bug Report
+description: Something is not working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please fill in as much detail as possible. Attach the logs when relevant: `docker compose logs`.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste the relevant output. It holds no message content.
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: "Proton Mail Forwarder version"
+      placeholder: "e.g. 1.0.0 (proton_mail_forwarder version)"
+    validations:
+      required: true

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "ignorePaths": [],
+  "dependencyDashboard": false,
+  "labels": ["dependencies"],
+  "minimumReleaseAge": "3 days",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "platformAutomerge": false,
+  "automergeStrategy": "squash",
+  "rebaseWhen": "behind-base-branch",
+  "postUpdateOptions": ["gomodTidy"],
+  "postUpgradeTasks": {
+    "commands": ["sh .github/scripts/changelog.sh dependency"],
+    "dataFileTemplate": "{{{depName}}}\t{{#if (equals updateType 'digest')}}{{{currentDigestShort}}}{{else}}{{#if (equals datasource 'docker')}}{{{currentValue}}}{{else}}{{#if currentVersion}}{{{currentVersion}}}{{else}}{{{currentValue}}}{{/if}}{{/if}}{{/if}}\t{{#if (equals updateType 'digest')}}{{{newDigestShort}}}{{else}}{{#if (equals datasource 'docker')}}{{{newValue}}}{{else}}{{#if newVersion}}{{{newVersion}}}{{else}}{{{newValue}}}{{/if}}{{/if}}{{/if}}\n",
+    "fileFilters": ["CHANGELOG.md"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions",
+      "commitMessagePrefix": "ci:",
+      "automerge": true,
+      "postUpgradeTasks": { "commands": [] }
+    },
+    {
+      "description": "Test tools reach no user, so they get no changelog line.",
+      "matchFileNames": ["test/**", "tests/**"],
+      "postUpgradeTasks": { "commands": [] }
+    },
+    {
+      "matchDepTypes": ["devDependencies"],
+      "postUpgradeTasks": { "commands": [] }
+    },
+    {
+      "description": "Runs on releases only, so no pull request check covers it.",
+      "matchPackageNames": ["softprops/action-gh-release", "peter-evans/dockerhub-description"],
+      "groupName": "release action",
+      "automerge": false
+    },
+    {
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "commitMessagePrefix": "build(docker):",
+      "separateMinorPatch": true
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Go comes from the toolchain line; the go line is the oldest Go that builds it.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["golang"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["toolchain"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Followed from Proton Mail Bridge by .github/scripts/bridge-sync.sh.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["github.com/ProtonMail/**", "github.com/go-resty/resty/v2", "github.com/emersion/go-message"],
+      "enabled": false
+    },
+    {
+      "matchPackageNames": ["ivenos/proton_mail_forwarder"],
+      "enabled": false
+    }
+  ]
+}

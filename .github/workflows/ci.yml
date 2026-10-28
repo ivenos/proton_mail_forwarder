@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: A branch or commit to test without publishing
+        required: false
+        type: string
+      tag:
+        description: The release tag to test and publish, such as v1.5.0
+        required: false
+        type: string
+
+env:
+  GITHUB_IMAGE: ghcr.io/ivenos/proton_mail_forwarder
+  DOCKERHUB_IMAGE: ivenos/proton_mail_forwarder
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.tag || inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || inputs.ref }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check for known vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+      - name: Run tests
+        run: go test -race ./...
+
+      - name: Shellcheck
+        run: shellcheck test/image_test.sh .github/scripts/bridge-sync.sh .github/scripts/build-binaries.sh .github/scripts/dockerhub-description.sh
+
+      - name: Build the binaries for the image
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          version=dev
+          if [ -n "$TAG" ]; then version="${TAG#v}"; fi
+          sh .github/scripts/build-binaries.sh "$version" dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ inputs.tag || inputs.ref || github.sha }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  test-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || inputs.ref }}
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./...
+
+  image:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag || inputs.ref }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ inputs.tag || inputs.ref || github.sha }}
+          path: dist
+
+      - name: Build image
+        run: docker build -t proton_mail_forwarder:test .
+
+      - name: Run image test
+        run: sh test/image_test.sh proton_mail_forwarder:test
+
+  publish:
+    needs: [test, test-windows, image]
+    if: >-
+      github.repository == 'ivenos/proton_mail_forwarder' &&
+      github.event_name != 'pull_request' &&
+      inputs.ref == '' &&
+      (inputs.tag != '' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ inputs.tag || inputs.ref || github.sha }}
+          path: dist
+
+      - name: Read the commit that was checked out
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ env.GITHUB_IMAGE }}
+            docker.io/${{ env.DOCKERHUB_IMAGE }}
+          flavor: latest=auto
+          tags: |
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' && inputs.tag == '' }}
+            type=semver,pattern={{version}},value=${{ inputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
+            type=semver,pattern={{major}},value=${{ inputs.tag }}
+          # GitHub reports the deprecated GPL-3.0, which leaves -only open.
+          labels: |
+            org.opencontainers.image.licenses=GPL-3.0-only
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+
+      - name: Refuse to publish without a tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          count=$(jq -r '.tags | length' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No image tag derived for $REF - refusing to push an untagged image."
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          push: true
+
+      - name: Write the Docker Hub description
+        if: inputs.tag != '' && !contains(inputs.tag, '-')
+        env:
+          TAG: ${{ inputs.tag }}
+        run: sh .github/scripts/dockerhub-description.sh "$GITHUB_REPOSITORY" "$TAG" > "$RUNNER_TEMP/dockerhub.md"
+
+      - name: Update the Docker Hub description
+        if: inputs.tag != '' && !contains(inputs.tag, '-')
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          readme-filepath: ${{ runner.temp }}/dockerhub.md
