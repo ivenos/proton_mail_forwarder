@@ -16,6 +16,6 @@ All notable changes to this project are documented in this file, in the format o
 
 ### Dependencies
 
-- golang.org/x/net v0.56.0 -> v0.61.0
+- golang.org/x/net v0.56.0 -> v0.62.0
 
 [Unreleased]: https://github.com/ivenos/proton_mail_forwarder/commits/main
