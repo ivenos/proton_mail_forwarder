@@ -38,6 +38,7 @@ type fakeSubmission struct {
 	mailErr atomic.Pointer[smtp.SMTPError]
 	rcptErr atomic.Pointer[smtp.SMTPError]
 	dataErr atomic.Pointer[smtp.SMTPError]
+	hangUp  atomic.Bool
 
 	mu       sync.Mutex
 	received [][]byte
@@ -77,12 +78,13 @@ func (f *fakeSubmission) messages() [][]byte {
 	return append([][]byte(nil), f.received...)
 }
 
-func (f *fakeSubmission) NewSession(_ *smtp.Conn) (smtp.Session, error) {
-	return &fakeSubmissionSession{fake: f}, nil
+func (f *fakeSubmission) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	return &fakeSubmissionSession{fake: f, conn: c}, nil
 }
 
 type fakeSubmissionSession struct {
 	fake   *fakeSubmission
+	conn   *smtp.Conn
 	authed bool
 	to     []string
 }
@@ -125,6 +127,9 @@ func (s *fakeSubmissionSession) Data(r io.Reader) error {
 	literal, err := io.ReadAll(r)
 	if err != nil {
 		return err
+	}
+	if f.hangUp.Load() {
+		return s.conn.Conn().Close()
 	}
 	if f.refuse.Load() {
 		return &smtp.SMTPError{Code: 554, EnhancedCode: smtp.EnhancedCode{5, 7, 1}, Message: "Message refused"}

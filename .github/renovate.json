@@ -4,6 +4,7 @@
   "ignorePaths": [],
   "dependencyDashboard": false,
   "labels": ["dependencies"],
+  "commitMessageAction": "update",
   "minimumReleaseAge": "3 days",
   "minimumReleaseAgeBehaviour": "timestamp-optional",
   "platformAutomerge": false,
@@ -58,6 +59,12 @@
       "matchManagers": ["gomod"],
       "matchDepTypes": ["toolchain"],
       "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["require"],
+      "matchUpdateTypes": ["minor", "patch"],
       "automerge": true
     },
     {

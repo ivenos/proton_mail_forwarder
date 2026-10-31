@@ -288,8 +288,6 @@ func (mb *mailbox) check(ctx context.Context) error {
 	}
 	if err == nil {
 		err = mb.submission.send(ctx, "", nil)
-	}
-	if err == nil {
 		mb.retryRemovals(ctx)
 	}
 	mb.setStatus(err)
@@ -318,12 +316,15 @@ func (mb *mailbox) deliver(wait context.Context, recipients []string, literal []
 	defer cancel()
 
 	id, err := mb.send(ctx, recipients, literal)
-	switch {
-	case err == nil:
+	if err == nil || errors.Is(err, errUnconfirmed) {
+		confirmed := err == nil
 		mb.removing[id] = time.Now()
 		mb.saveCopies()
+		mb.removals.Go(func() { mb.removeSentCopy(id, confirmed) })
+	}
+	switch {
+	case err == nil:
 		mb.setStatus(nil)
-		mb.removals.Go(func() { mb.removeSentCopy(id) })
 	case errors.Is(err, errRefused):
 	case errors.Is(err, errNotSignedIn), errors.Is(err, errTokenRefused), errors.Is(err, errEnvelopeRefused):
 		mb.setStatus(err)
@@ -355,8 +356,8 @@ func (mb *mailbox) send(ctx context.Context, recipients []string, literal []byte
 	return id, mb.submission.send(ctx, addr.Email, rewrite(literal, mb.submission.sender, id))
 }
 
-// removeSentCopy deletes the copy Proton Mail keeps under Sent, tries again while it has not shown up, and then leaves it to check.
-func (mb *mailbox) removeSentCopy(id string) {
+// removeSentCopy deletes the copy Proton Mail keeps under Sent, tries again while it has not shown up, and then leaves it to check. A message Proton Mail did not confirm may have no copy, so it is forgotten instead.
+func (mb *mailbox) removeSentCopy(id string, confirmed bool) {
 	for _, wait := range mb.removalWaits {
 		select {
 		case <-time.After(wait):
@@ -374,16 +375,24 @@ func (mb *mailbox) removeSentCopy(id string) {
 			return
 		}
 	}
-	log.Printf("the sent copy of %s is still under Sent, trying again later", id)
+	if confirmed {
+		log.Printf("the sent copy of %s is still under Sent, trying again later", id)
+	} else {
+		log.Printf("no sent copy of %s showed up", id)
+	}
 
 	select {
 	case mb.lock <- struct{}{}:
 	case <-mb.stopping:
 		return
 	}
-	mb.unremoved[id] = mb.removing[id]
-	delete(mb.removing, id)
-	mb.setStatus(nil)
+	if confirmed {
+		mb.unremoved[id] = mb.removing[id]
+		delete(mb.removing, id)
+		mb.setStatus(nil)
+	} else {
+		mb.forget(id)
+	}
 	mb.release()
 }
 

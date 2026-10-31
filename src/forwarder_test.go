@@ -308,6 +308,7 @@ func TestMessageLandsUnreadInTheInboxWithoutASentCopy(t *testing.T) {
 func TestSentCopyThatShowsUpLateIsRemoved(t *testing.T) {
 	e := newTestEnv(t)
 	e.submit.lag = 700 * time.Millisecond
+	e.cfg.removalWaits = append(e.cfg.removalWaits, 2*time.Second, 4*time.Second)
 	e.login()
 	addr := e.serve()
 
@@ -319,6 +320,51 @@ func TestSentCopyThatShowsUpLateIsRemoved(t *testing.T) {
 
 	if got := len(e.inbox()); got != 1 {
 		t.Fatalf("inbox has %d messages, want 1", got)
+	}
+}
+
+func TestSentCopyOfAMessageThatTimedOutIsRemoved(t *testing.T) {
+	e := newTestEnv(t)
+	e.cfg.deliveryTimeout = time.Second
+	e.submit.delay = 2 * time.Second
+	e.login()
+	addr := e.serve()
+
+	if err := send(addr, nil, "hello@example.com"); err == nil || !strings.HasPrefix(err.Error(), "451") {
+		t.Fatalf("got %v, want a 451 reply", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for len(e.inbox()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Proton Mail did not keep the message")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	e.waitForNoSentCopy()
+}
+
+func TestUnconfirmedMessageWithoutASentCopyIsForgotten(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.removalWaits = []time.Duration{10 * time.Millisecond}
+	e.submit.hangUp.Store(true)
+	e.login()
+	mb := newMailbox(e.manager(), e.cfg)
+	defer mb.disconnect()
+	ctx := context.Background()
+
+	if _, err := mb.deliver(ctx, []string{"hello@example.com"}, []byte(testMessage)); !errors.Is(err, errUnconfirmed) {
+		t.Fatalf("got %v, want errUnconfirmed", err)
+	}
+	mb.removals.Wait()
+	if err := mb.check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.status(); got != statusOK {
+		t.Errorf("status is %q", got)
+	}
+	if got := loadCopies(copiesPath(e.cfg)); len(got) != 0 {
+		t.Errorf("sent-copies.json still holds %v", got)
 	}
 }
 

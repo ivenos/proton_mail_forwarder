@@ -15,6 +15,7 @@ var (
 	errTokenRefused    = errors.New("Proton Mail refused the SMTP token")
 	errEnvelopeRefused = errors.New("Proton Mail refused the sender or the recipient")
 	errRefused         = errors.New("Proton Mail refused the message")
+	errUnconfirmed     = errors.New("Proton Mail did not confirm the message")
 )
 
 type submission struct {
@@ -71,6 +72,9 @@ func (s submission) send(ctx context.Context, to string, literal []byte) error {
 		return err
 	}
 	if err := w.Close(); err != nil {
+		if !errors.As(err, new(*smtp.SMTPError)) {
+			return fmt.Errorf("%w (%v)", errUnconfirmed, err)
+		}
 		return replyError(err, errRefused)
 	}
 	c.Quit()

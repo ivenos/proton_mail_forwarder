@@ -598,7 +598,6 @@ func TestNewLoginEndsTheOldSession(t *testing.T) {
 
 func TestSentCopyIsRemovedWhenStoppingRightAfterADelivery(t *testing.T) {
 	e := newTestEnv(t)
-	e.submit.lag = 500 * time.Millisecond
 	e.login()
 	addr, stop := e.serveStoppable()
 
@@ -979,6 +978,37 @@ func TestSentCopyLeftWhileTheLockIsBusyIsStillRetried(t *testing.T) {
 	mb.checkTimeout = time.Minute
 	if err := mb.check(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if got := e.sentCopies(); got != 0 {
+		t.Errorf("%d copies are left under Sent after the check", got)
+	}
+}
+
+func TestSentCopyIsRetriedWhileTheTokenIsRefused(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.removalWaits = []time.Duration{10 * time.Millisecond}
+	e.login()
+	m, hook := e.hookedManager()
+	failDelete := func(r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/mail/v4/messages/delete") {
+			r.URL.Path += "-gone"
+		}
+	}
+	hook.request.Store(&failDelete)
+	mb := newMailbox(m, e.cfg)
+	defer mb.disconnect()
+	ctx := context.Background()
+
+	if _, err := mb.deliver(ctx, []string{"hello@example.com"}, []byte(testMessage)); err != nil {
+		t.Fatal(err)
+	}
+	mb.removals.Wait()
+
+	hook.request.Store(nil)
+	mb.submission.token = "revoked"
+	if err := mb.check(ctx); !errors.Is(err, errTokenRefused) {
+		t.Fatalf("the check gave %v, want errTokenRefused", err)
 	}
 	if got := e.sentCopies(); got != 0 {
 		t.Errorf("%d copies are left under Sent after the check", got)

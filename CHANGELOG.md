@@ -14,8 +14,4 @@ All notable changes to this project are documented in this file, in the format o
 - Each new Proton Mail Bridge release is followed on its own.
 - An image for amd64 and arm64 on Docker Hub.
 
-### Dependencies
-
-- golang.org/x/net v0.56.0 -> v0.62.0
-
 [Unreleased]: https://github.com/ivenos/proton_mail_forwarder/commits/main
