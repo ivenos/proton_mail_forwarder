@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file, in the format o
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-31
+
 ### Added
 
 - An SMTP server that hands every message to Proton Mail for the inbox, with a notification, and removes the copy in Sent.
@@ -14,4 +16,5 @@ All notable changes to this project are documented in this file, in the format o
 - Each new Proton Mail Bridge release is followed on its own.
 - An image for amd64 and arm64 on Docker Hub.
 
-[Unreleased]: https://github.com/ivenos/proton_mail_forwarder/commits/main
+[Unreleased]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/ivenos/proton_mail_forwarder/releases/tag/v1.0.0
