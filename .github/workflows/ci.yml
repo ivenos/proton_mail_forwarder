@@ -55,7 +55,7 @@ jobs:
         run: go test -race ./...
 
       - name: Shellcheck
-        run: shellcheck test/image_test.sh .github/scripts/bridge-sync.sh .github/scripts/build-binaries.sh .github/scripts/dockerhub-description.sh
+        run: shellcheck test/image_test.sh .github/scripts/bridge-sync.sh .github/scripts/build-binaries.sh .github/scripts/changelog.sh .github/scripts/dockerhub-description.sh
 
       - name: Build the binaries for the image
         env:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Starts the image without a session: it must listen, refuse mail for now and report itself unhealthy.
+# Starts the image without a session: it must listen, refuse mail for now, report itself unhealthy and stop cleanly.
 set -eu
 
 image="${1:?usage: image_test.sh IMAGE}"
@@ -40,5 +40,12 @@ echo "deferred: $reply"
 if docker exec "$name" proton_mail_forwarder healthcheck 2> /dev/null; then
     fail "healthcheck passed without a session"
 fi
+
+start=$(date +%s)
+docker stop "$name" > /dev/null
+took=$(( $(date +%s) - start ))
+[ "$took" -lt 10 ] || fail "docker stop took $took seconds"
+code=$(docker inspect -f '{{.State.ExitCode}}' "$name")
+[ "$code" = 0 ] || fail "exit code $code after docker stop"
 
 echo "PASS"

@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file, in the format o
 
 ## [Unreleased]
 
+### Added
+
+- Apps can send from addresses with umlauts or other characters outside ASCII.
+
+### Fixed
+
+- Mail no longer goes to an address that cannot receive mail, such as an external one.
+- Replies reach the sender even when the sender's name uses an unknown character set.
+- A message without headers, such as the output of a script, arrives with its text.
+- An app that stops sending in the middle of a message gets a temporary error instead of a permanent one.
+- A large message over a slow connection no longer times out while it is still arriving.
+- A missing data folder no longer ends the session at Proton.
+- The healthcheck no longer passes while a renewed session could not be saved.
+- After a restart, a message Proton Mail did not confirm no longer keeps the healthcheck failing for a day.
+- Pressing Ctrl-C at the password prompt no longer leaves the terminal without echo.
+- `logout` no longer blames Proton when the data folder cannot be used.
+
 ## [1.0.0] - 2026-10-31
 
 ### Added

@@ -75,6 +75,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			listen:          "127.0.0.1:0",
 			dataDir:         t.TempDir(),
 			maxSize:         1 << 20,
+			readTimeout:     time.Minute,
 			checkTimeout:    time.Minute,
 			deliveryTimeout: 2 * time.Minute,
 			removalWaits:    []time.Duration{50 * time.Millisecond, 200 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second},
@@ -581,9 +582,9 @@ func TestMessageGoesToTheAddressARecipientNames(t *testing.T) {
 func TestPickAddress(t *testing.T) {
 	enabled := proton.AddressStatusEnabled
 	addresses := []proton.Address{
-		{ID: "off", Email: "off@example.com", Status: proton.AddressStatusDisabled, Order: 0},
-		{ID: "second", Email: "second@example.com", Status: enabled, Order: 2},
-		{ID: "first", Email: "first@example.com", Status: enabled, Order: 1},
+		{ID: "off", Email: "off@example.com", Status: proton.AddressStatusDisabled, Receive: true, Order: 0},
+		{ID: "second", Email: "second@example.com", Status: enabled, Receive: true, Order: 2},
+		{ID: "first", Email: "first@example.com", Status: enabled, Receive: true, Order: 1},
 	}
 
 	for _, tc := range []struct {
@@ -669,12 +670,25 @@ func TestLoadConfigReadsEveryVariable(t *testing.T) {
 	}
 	want := config{
 		listen: "0.0.0.0:2525", username: "app", password: "secret", dataDir: "/srv/forwarder", maxSize: 1 << 20,
-		submission:   submission{addr: "smtp.protonmail.ch:587", sender: "hello@example.com", token: "token"},
-		checkTimeout: cfg.checkTimeout, deliveryTimeout: cfg.deliveryTimeout, removalWaits: cfg.removalWaits,
+		submission:  submission{addr: "smtp.protonmail.ch:587", sender: "hello@example.com", token: "token"},
+		readTimeout: cfg.readTimeout, checkTimeout: cfg.checkTimeout, deliveryTimeout: cfg.deliveryTimeout, removalWaits: cfg.removalWaits,
 		checkEvery: cfg.checkEvery, retryEvery: cfg.retryEvery,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v, want %+v", cfg, want)
+	}
+}
+
+func TestServeWithoutATokenRefusesToStart(t *testing.T) {
+	done := make(chan error, 1)
+	go func() { done <- runServe(config{listen: "127.0.0.1:0", dataDir: t.TempDir()}) }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "PROTON_SMTP_TOKEN") {
+			t.Errorf("got %v, want an error that names PROTON_SMTP_TOKEN", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve started without a token")
 	}
 }
 

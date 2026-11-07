@@ -25,6 +25,7 @@ const (
 var (
 	errAuthRequired = &smtp.SMTPError{Code: 530, EnhancedCode: smtp.EnhancedCode{5, 7, 0}, Message: "Authentication required"}
 	errStopping     = &smtp.SMTPError{Code: 421, EnhancedCode: smtp.EnhancedCode{4, 3, 2}, Message: "Shutting down, try again later"}
+	errUnread       = &smtp.SMTPError{Code: 451, EnhancedCode: smtp.EnhancedCode{4, 4, 2}, Message: "The message did not arrive in full, try again later"}
 )
 
 func serve(ctx context.Context, cfg config, m *proton.Manager) error {
@@ -56,9 +57,10 @@ func serveOn(ctx context.Context, cfg config, m *proton.Manager, listener net.Li
 	server.MaxMessageBytes = cfg.maxSize
 	server.MaxLineLength = int(cfg.maxSize)
 	server.MaxRecipients = 50
-	server.ReadTimeout = 5 * time.Minute
+	server.ReadTimeout = cfg.readTimeout
 	server.WriteTimeout = time.Minute
 	server.AllowInsecureAuth = true
+	server.EnableSMTPUTF8 = true
 
 	background, stop := context.WithCancel(ctx)
 	defer stop()
@@ -77,6 +79,7 @@ func serveOn(ctx context.Context, cfg config, m *proton.Manager, listener net.Li
 		return err
 	}
 
+	// Docker kills the container 10 s after SIGTERM.
 	shutdown, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	drained := b.drain(shutdown)
@@ -128,8 +131,8 @@ type backend struct {
 	stopping bool
 }
 
-func (b *backend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
-	s := &smtpSession{backend: b}
+func (b *backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
+	s := &smtpSession{backend: b, conn: c}
 	if b.cfg.username == "" {
 		return s, nil
 	}
@@ -159,6 +162,7 @@ func (b *backend) drain(ctx context.Context) bool {
 
 type smtpSession struct {
 	backend    *backend
+	conn       *smtp.Conn
 	authed     bool
 	busy       bool
 	recipients []string
@@ -186,9 +190,12 @@ func (s *smtpSession) Rcpt(to string, _ *smtp.RcptOptions) error {
 }
 
 func (s *smtpSession) Data(r io.Reader) error {
-	literal, err := io.ReadAll(r)
+	literal, err := io.ReadAll(&readDeadline{r: r, conn: s.conn.Conn(), timeout: s.backend.cfg.readTimeout})
 	if err != nil {
-		return err
+		if errors.As(err, new(*smtp.SMTPError)) {
+			return err
+		}
+		return errUnread
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), s.backend.cfg.deliveryTimeout)
@@ -202,6 +209,23 @@ func (s *smtpSession) Data(r io.Reader) error {
 
 	log.Printf("sent message %s", id)
 	return nil
+}
+
+// go-smtp sets one read deadline for the whole DATA transfer.
+type readDeadline struct {
+	r       io.Reader
+	conn    net.Conn
+	timeout time.Duration
+}
+
+func (d *readDeadline) Read(p []byte) (int, error) {
+	if len(p) > 4096 {
+		p = p[:4096]
+	}
+	if d.timeout > 0 {
+		d.conn.SetReadDeadline(time.Now().Add(d.timeout))
+	}
+	return d.r.Read(p)
 }
 
 func (s *smtpSession) Reset() {

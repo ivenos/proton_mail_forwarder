@@ -69,6 +69,36 @@ func (r *rawSMTP) bdat(chunk string, last bool) (int, string) {
 	return r.reply()
 }
 
+func (r *rawSMTP) data(literal string) (int, string) {
+	r.t.Helper()
+	if code, msg := r.cmd("DATA"); code != 354 {
+		r.t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	fmt.Fprintf(r.c.W, "%s.\r\n", literal)
+	if err := r.c.W.Flush(); err != nil {
+		r.t.Fatal(err)
+	}
+	return r.reply()
+}
+
+func (r *rawSMTP) envelope() {
+	r.t.Helper()
+	if code, msg := r.cmd("EHLO client"); code != 250 {
+		r.t.Fatalf("EHLO gave %d %s", code, msg)
+	}
+	if code, msg := r.cmd("MAIL FROM:<shop@example.org>"); code != 250 {
+		r.t.Fatalf("MAIL gave %d %s", code, msg)
+	}
+	if code, msg := r.cmd("RCPT TO:<hello@example.com>"); code != 250 {
+		r.t.Fatalf("RCPT gave %d %s", code, msg)
+	}
+}
+
+func literalOfSize(size int) string {
+	header := "Subject: Big\r\n\r\n"
+	return header + strings.Repeat("x", size-len(header)-2) + "\r\n"
+}
+
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -628,5 +658,288 @@ func TestASessionThatComesBackIsNoticedByTheNextCheck(t *testing.T) {
 			t.Fatal("no check ran after the login")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestChunkedMessageExactlyAtTheSizeLimitIsAccepted(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.maxSize = 200
+	e.login()
+	r := dialRaw(t, e.serve())
+	r.envelope()
+
+	if code, msg := r.bdat(literalOfSize(200), true); code != 250 {
+		t.Errorf("BDAT gave %d %q, want 250", code, msg)
+	}
+	if got := len(e.submit.messages()); got != 1 {
+		t.Errorf("Proton Mail got %d messages, want 1", got)
+	}
+}
+
+func TestMessageOneByteOverTheSizeLimitIsRefused(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.maxSize = 200
+	e.login()
+	r := dialRaw(t, e.serve())
+	r.envelope()
+
+	if code, msg := r.data(literalOfSize(201)); code != 552 {
+		t.Errorf("got %d %q, want 552", code, msg)
+	}
+	if got := len(e.submit.messages()); got != 0 {
+		t.Errorf("Proton Mail got %d messages", got)
+	}
+	if code, msg := r.cmd("NOOP"); code != 250 {
+		t.Errorf("the connection is unusable after a refused message: %d %q", code, msg)
+	}
+}
+
+func TestNullSenderIsForwarded(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	r := dialRaw(t, e.serve())
+
+	if code, msg := r.cmd("EHLO client"); code != 250 {
+		t.Fatalf("EHLO gave %d %s", code, msg)
+	}
+	if code, msg := r.cmd("MAIL FROM:<>"); code != 250 {
+		t.Fatalf("MAIL FROM:<> gave %d %s", code, msg)
+	}
+	if code, msg := r.cmd("RCPT TO:<hello@example.com>"); code != 250 {
+		t.Fatalf("RCPT gave %d %s", code, msg)
+	}
+	if code, msg := r.data(testMessage); code != 250 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	if got := len(e.inbox()); got != 1 {
+		t.Errorf("inbox has %d messages, want 1", got)
+	}
+}
+
+func TestEmptyMessageIsForwarded(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	r := dialRaw(t, e.serve())
+	r.envelope()
+
+	if code, msg := r.data(""); code != 250 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	sent := e.submit.messages()
+	if len(sent) != 1 {
+		t.Fatalf("Proton Mail got %d messages, want 1", len(sent))
+	}
+	if from, _ := rfc822.GetHeaderValue(sent[0], "From"); from != "<"+e.submit.sender+">" {
+		t.Errorf("From is %q", from)
+	}
+}
+
+func TestPipelinedSessionIsServed(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	r := dialRaw(t, e.serve())
+
+	fmt.Fprintf(r.c.W, "EHLO client\r\nMAIL FROM:<shop@example.org>\r\nRCPT TO:<hello@example.com>\r\nDATA\r\n%s.\r\nQUIT\r\n", testMessage)
+	if err := r.c.W.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []int{250, 250, 250, 354, 250, 221} {
+		if code, msg := r.reply(); code != want {
+			t.Fatalf("reply %d is %d %q, want %d", i+1, code, msg, want)
+		}
+	}
+	if got := len(e.inbox()); got != 1 {
+		t.Errorf("inbox has %d messages, want 1", got)
+	}
+}
+
+func TestSecondMailWithoutResetCountsOnce(t *testing.T) {
+	b := &backend{}
+	s, err := b.NewSession(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.Mail("shop@example.org", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b.busy != 1 {
+		t.Errorf("%d sessions are busy after two MAIL commands, want 1", b.busy)
+	}
+	s.Reset()
+	if b.busy != 0 {
+		t.Errorf("%d sessions are busy after RSET, want 0", b.busy)
+	}
+	if err := s.Mail("shop@example.org", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Logout(); err != nil {
+		t.Fatal(err)
+	}
+	if b.busy != 0 {
+		t.Errorf("%d sessions are busy after QUIT, want 0", b.busy)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if !b.drain(ctx) {
+		t.Error("drain waits although nothing is busy")
+	}
+}
+
+func TestClientThatHangsUpDuringDataFreesTheServer(t *testing.T) {
+	e := newTestEnv(t)
+	e.login()
+	addr, stop := e.serveStoppable()
+	r := dialRaw(t, addr)
+	r.envelope()
+
+	if code, msg := r.cmd("DATA"); code != 354 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	fmt.Fprint(r.c.W, testMessage[:20])
+	if err := r.c.W.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	r.c.Close()
+	time.Sleep(200 * time.Millisecond)
+
+	start := time.Now()
+	stop()
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("stopping took %s after a client hung up during DATA", took.Round(time.Millisecond))
+	}
+	if got := len(e.submit.messages()); got != 0 {
+		t.Errorf("Proton Mail got %d messages from a client that hung up", got)
+	}
+}
+
+func TestProtonReplyTextAtDataIsNotLogged(t *testing.T) {
+	for _, code := range []int{450, 554} {
+		e := newTestEnv(t)
+		e.submit.dataErr.Store(&gosmtp.SMTPError{Code: code, EnhancedCode: gosmtp.EnhancedCode{5, 7, 1}, Message: "<" + e.submit.sender + ">: Message refused"})
+		e.login()
+		addr := e.serve()
+		logged := captureLog(t)
+
+		if err := send(addr, nil, "hello@example.com"); err == nil {
+			t.Fatalf("%d: the message was accepted", code)
+		}
+		if strings.Contains(logged.String(), e.submit.sender) {
+			t.Errorf("%d: the log has the address:\n%s", code, logged)
+		}
+		if status, _ := os.ReadFile(statusPath(e.cfg)); strings.Contains(string(status), e.submit.sender) {
+			t.Errorf("%d: the status has the address: %s", code, status)
+		}
+	}
+}
+
+func TestMessageWithBareLineFeedsArrivesWithCRLF(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	r := dialRaw(t, e.serve())
+	r.envelope()
+
+	if code, msg := r.data("From: A <a@example.org>\nSubject: Bare\n\nline one\nline two\r\n"); code != 250 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	sent := e.submit.messages()
+	if len(sent) != 1 {
+		t.Fatalf("Proton Mail got %d messages, want 1", len(sent))
+	}
+	if bytes.Contains(bytes.ReplaceAll(sent[0], []byte("\r\n"), nil), []byte("\n")) {
+		t.Errorf("Proton Mail got bare line feeds:\n%q", sent[0])
+	}
+	if !bytes.HasSuffix(sent[0], []byte("\r\n\r\nline one\r\nline two\r\n")) {
+		t.Errorf("the body changed:\n%q", sent[0])
+	}
+}
+
+func TestClientThatStallsDuringDataIsDeferred(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.readTimeout = time.Second
+	r := dialRaw(t, e.serve())
+	r.envelope()
+
+	if code, msg := r.cmd("DATA"); code != 354 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	fmt.Fprint(r.c.W, testMessage[:20])
+	if err := r.c.W.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := r.reply(); code != 451 {
+		t.Errorf("a stalled upload gave %d %q, want 451", code, msg)
+	}
+	if got := len(e.submit.messages()); got != 0 {
+		t.Errorf("Proton Mail got %d messages from a stalled upload", got)
+	}
+}
+
+func TestSenderWithUTF8AddressIsForwarded(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	r := dialRaw(t, e.serve())
+
+	if code, msg := r.cmd("EHLO client"); code != 250 || !strings.Contains(msg, "SMTPUTF8") {
+		t.Fatalf("EHLO gave %d %q, want SMTPUTF8", code, msg)
+	}
+	if code, msg := r.cmd("MAIL FROM:<jürgen@bücher.example> SMTPUTF8"); code != 250 {
+		t.Fatalf("MAIL with SMTPUTF8 gave %d %s", code, msg)
+	}
+	if code, msg := r.cmd("RCPT TO:<hello@bücher.example>"); code != 250 {
+		t.Fatalf("RCPT gave %d %s", code, msg)
+	}
+	if code, msg := r.data("From: Jürgen Müller <jürgen@bücher.example>\r\nSubject: Grüße\r\n\r\nHallo\r\n"); code != 250 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+
+	sent := e.submit.messages()
+	if len(sent) != 1 {
+		t.Fatalf("Proton Mail got %d messages, want 1", len(sent))
+	}
+	h, err := rfc822.NewHeader(rfc822.Parse(sent[0]).Header())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Get("Reply-To"); got != "Jürgen Müller <jürgen@bücher.example>" {
+		t.Errorf("Reply-To is %q", got)
+	}
+	if got := h.Get("From"); !strings.HasSuffix(got, "<"+e.submit.sender+">") || !strings.Contains(got, "=?utf-8?") {
+		t.Errorf("From is %q, want the encoded name and the own address", got)
+	}
+}
+
+func TestSlowButSteadyUploadIsAccepted(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.readTimeout = time.Second
+	e.login()
+	r := dialRaw(t, e.serve())
+	r.envelope()
+
+	if code, msg := r.cmd("DATA"); code != 354 {
+		t.Fatalf("DATA gave %d %s", code, msg)
+	}
+	literal := literalOfSize(64<<10) + ".\r\n"
+	for len(literal) > 0 {
+		n := min(4096, len(literal))
+		fmt.Fprint(r.c.W, literal[:n])
+		if err := r.c.W.Flush(); err != nil {
+			t.Fatalf("the server hung up during a steady upload: %v", err)
+		}
+		literal = literal[n:]
+		time.Sleep(150 * time.Millisecond)
+	}
+	if code, msg := r.reply(); code != 250 {
+		t.Errorf("an upload that never pauses for a second gave %d %q, want 250", code, msg)
 	}
 }

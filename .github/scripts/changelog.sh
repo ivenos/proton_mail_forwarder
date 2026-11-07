@@ -22,6 +22,7 @@ dependency() {
     [ -n "$1" ] && [ -n "$2" ] && [ -n "$3" ] || die "a dependency needs a name, the old and the new version"
     [ ! -f "$FILE" ] || grep -q '^## \[[0-9]' "$FILE" || return 0
     export NAME="$1" FROM="$2" TO="$3"
+    # shellcheck disable=SC2016
     rewrite '
         { line[NR] = $0 }
         END {
@@ -85,6 +86,7 @@ release() {
     if grep -qF "## [$version]" "$FILE"; then die "$version is in $FILE already"; fi
     MERGED=$(merged)
     export VERSION="$version" DAY="$day" MERGED
+    # shellcheck disable=SC2016
     rewrite '
         function numbered(text,    part, all, found, count, i, j, swap, list) {
             split(text, part, " ")

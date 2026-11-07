@@ -34,6 +34,7 @@ type config struct {
 	maxSize    int64
 	submission submission
 
+	readTimeout     time.Duration
 	checkTimeout    time.Duration
 	deliveryTimeout time.Duration
 	removalWaits    []time.Duration
@@ -125,6 +126,7 @@ func loadConfig() (config, error) {
 			token:  os.Getenv("PROTON_SMTP_TOKEN"),
 		},
 
+		readTimeout:     5 * time.Minute,
 		checkTimeout:    time.Minute,
 		deliveryTimeout: 2 * time.Minute,
 		removalWaits:    []time.Duration{time.Second, 5 * time.Second, 30 * time.Second, 2 * time.Minute},

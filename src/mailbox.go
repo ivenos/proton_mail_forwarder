@@ -77,7 +77,7 @@ func removeSession(path string) error {
 func lockSession(path string) (func(), error) {
 	f, err := os.OpenFile(path+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("lock the session: %v", err)
 	}
 	if err := lockFile(f); err != nil {
 		f.Close()
@@ -203,10 +203,7 @@ func (mb *mailbox) connect(ctx context.Context) error {
 		return err
 	}
 	if mb.client != nil && !mb.deauthed.Load() && s.UID == mb.session.UID {
-		if !mb.saved {
-			return mb.saveSession()
-		}
-		return nil
+		return mb.saveIfNeeded()
 	}
 	if s.UID != mb.session.UID {
 		mb.endSession(ctx)
@@ -238,6 +235,13 @@ func (mb *mailbox) saveSession() error {
 	saved, err := mb.session.update(mb.sessionPath)
 	mb.saved = saved
 	return err
+}
+
+func (mb *mailbox) saveIfNeeded() error {
+	if mb.saved {
+		return nil
+	}
+	return mb.saveSession()
 }
 
 // saveRefresh keeps a rotated token, unless a new login or a logout has replaced the session since. Requests run under the lock, and so does this.
@@ -290,6 +294,9 @@ func (mb *mailbox) check(ctx context.Context) error {
 		err = mb.submission.send(ctx, "", nil)
 		mb.retryRemovals(ctx)
 	}
+	if err == nil {
+		err = mb.saveIfNeeded()
+	}
 	mb.setStatus(err)
 	return err
 }
@@ -301,6 +308,7 @@ func (mb *mailbox) setStatus(err error) {
 	} else if len(mb.unremoved) > 0 {
 		text = fmt.Sprintf("copies left under Sent: %d", len(mb.unremoved))
 	}
+	// Windows cannot replace a file that is open.
 	if werr := os.WriteFile(mb.statusPath, []byte(text+"\n"), 0o600); werr != nil {
 		log.Printf("write status: %v", werr)
 	}
@@ -318,13 +326,17 @@ func (mb *mailbox) deliver(wait context.Context, recipients []string, literal []
 	id, err := mb.send(ctx, recipients, literal)
 	if err == nil || errors.Is(err, errUnconfirmed) {
 		confirmed := err == nil
-		mb.removing[id] = time.Now()
+		since := time.Now()
+		if !confirmed {
+			since = since.Add(-removalGiveUp)
+		}
+		mb.removing[id] = since
 		mb.saveCopies()
 		mb.removals.Go(func() { mb.removeSentCopy(id, confirmed) })
 	}
 	switch {
 	case err == nil:
-		mb.setStatus(nil)
+		mb.setStatus(mb.saveIfNeeded())
 	case errors.Is(err, errRefused):
 	case errors.Is(err, errNotSignedIn), errors.Is(err, errTokenRefused), errors.Is(err, errEnvelopeRefused):
 		mb.setStatus(err)
@@ -461,12 +473,12 @@ func (mb *mailbox) saveCopies() {
 	}
 }
 
-// pickAddress takes the enabled address a recipient names, or else the primary one.
+// pickAddress takes the address a recipient names, or else the primary one, among the enabled addresses that receive mail.
 func pickAddress(addresses []proton.Address, recipients []string) (proton.Address, error) {
 	var primary *proton.Address
 
 	for i, addr := range addresses {
-		if addr.Status != proton.AddressStatusEnabled {
+		if addr.Status != proton.AddressStatusEnabled || !addr.Receive {
 			continue
 		}
 		for _, rcpt := range recipients {
@@ -480,7 +492,7 @@ func pickAddress(addresses []proton.Address, recipients []string) (proton.Addres
 	}
 
 	if primary == nil {
-		return proton.Address{}, errors.New("the account has no enabled address")
+		return proton.Address{}, errors.New("the account has no enabled address that receives mail")
 	}
 	return *primary, nil
 }

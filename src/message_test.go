@@ -5,6 +5,7 @@ import (
 	"net/mail"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/ProtonMail/gluon/rfc5322"
 	"github.com/ProtonMail/gluon/rfc822"
@@ -167,6 +168,7 @@ func FuzzRewriteKeepsOneSafeFromAndTheBody(f *testing.F) {
 	f.Add([]byte("From: =?utf-8?q?Evil=0D=0ABcc:_victim@example.org?= <a@example.org>\r\nReply-To: \r\nSubject: x\r\n\r\nHi\r\n"))
 	f.Add([]byte("From: Team: a@example.org, b@example.org;\r\nSender: c@example.org\r\nFROM: d@example.org\r\n\r\n"))
 	f.Add([]byte("Backup failed: disk full\r\n"))
+	f.Add([]byte("Backup failed\r\ndisk full\r\n"))
 	f.Add([]byte("From: A <a@example.org>\nSubject: x\n\nbody\n"))
 	f.Add([]byte("  Backup failed\r\n\r\nbody\r\n"))
 	f.Add([]byte("From: \"Müller \\\\ Sohn\" <a@example.org>\r\n\r\nHi\r\n"))
@@ -178,6 +180,9 @@ func FuzzRewriteKeepsOneSafeFromAndTheBody(f *testing.F) {
 		h, err := rfc822.NewHeader(header)
 		if err != nil {
 			t.Fatalf("the rewritten header does not parse: %v\n%q", err, out)
+		}
+		if first, _, _ := bytes.Cut(literal, []byte("\n")); len(bytes.TrimSpace(first)) > 0 && !bytes.Contains(first, []byte(":")) && !bytes.Equal(h.FieldsNot(nil), header) {
+			t.Errorf("text without a field name is in the header:\n%q", out)
 		}
 		var froms, ids int
 		h.Entries(func(key, _ string) {
@@ -220,5 +225,75 @@ func TestRewriteKeepsAMessageThatStartsWithWhitespaceOutOfTheHeader(t *testing.T
 		if !strings.HasSuffix(string(body), strings.TrimLeft(literal, " \t\r\n")) {
 			t.Errorf("%q: the body is %q", literal, body)
 		}
+	}
+}
+
+func TestTextWithoutHeadersStaysOutOfTheHeader(t *testing.T) {
+	for _, literal := range []string{
+		"Backup failed\r\n",
+		"Backup failed\r\ndisk full\r\n",
+		"Backup failed\r\n\r\ndisk full\r\n",
+		"Backup failed\n",
+	} {
+		out := rewrite([]byte(literal), "hello@example.com", "new@example.com")
+		header, body := rfc822.Split(out)
+		h, err := rfc822.NewHeader(header)
+		if err != nil {
+			t.Fatalf("%q: %v", literal, err)
+		}
+		if !bytes.Equal(h.FieldsNot(nil), header) || string(body) != literal {
+			t.Errorf("%q: the text is in the header:\n%q", literal, out)
+		}
+	}
+}
+
+func TestRewriteRepliesToASenderWhoseNameCannotBeDecoded(t *testing.T) {
+	for _, from := range []string{
+		"=?x-unknown?Q?J=FCrgen?= <juergen@example.org>",
+		"=?utf-8?X?bad-encoding?= <juergen@example.org>",
+	} {
+		out := rewrite([]byte("From: "+from+"\r\nSubject: Hello\r\n\r\nHi\r\n"), "hello@example.com", "new@example.com")
+		h, err := rfc822.NewHeader(rfc822.Parse(out).Header())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := h.Get("Reply-To"); !strings.HasSuffix(got, "<juergen@example.org>") {
+			t.Errorf("%s: Reply-To is %q, want the sender", from, got)
+		}
+		if got := h.Get("From"); strings.Contains(got, "juergen@example.org") {
+			t.Errorf("%s: From %q shows the sender's address as the name", from, got)
+		}
+	}
+}
+
+func TestRewriteGivesAValidUTF8NameForAnUndecodableName(t *testing.T) {
+	for _, from := range []string{
+		"=?x-unknown?Q?J=FCrgen?= <juergen@example.org>",
+		"J\xfcrgen <juergen@example.org>",
+	} {
+		out := rewrite([]byte("From: "+from+"\r\nSubject: Hello\r\n\r\nHi\r\n"), "hello@example.com", "new@example.com")
+		got, _ := rfc822.GetHeaderValue(out, "From")
+		addr, err := mail.ParseAddress(got)
+		if err != nil {
+			t.Fatalf("From %q: %v", got, err)
+		}
+		if !utf8.ValidString(addr.Name) {
+			t.Errorf("%q: From %q decodes to the name %q, which is not valid UTF-8", from, got, addr.Name)
+		}
+	}
+}
+
+func TestStrayLineInTheHeaderKeepsTheSender(t *testing.T) {
+	out := rewrite([]byte("From: A <a@example.org>\r\nnot a header\r\nSubject: x\r\n\r\nbody\r\n"), "hello@example.com", "new@example.com")
+	header, body := rfc822.Split(out)
+	h, err := rfc822.NewHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Get("Reply-To"); got != "A <a@example.org>" {
+		t.Errorf("Reply-To is %q, want the sender", got)
+	}
+	if h.Get("Subject") != "x" || string(body) != "body\r\n" {
+		t.Errorf("the message changed:\n%q", out)
 	}
 }

@@ -326,3 +326,44 @@ func TestSubmissionReportsAnUnreachableServer(t *testing.T) {
 		t.Error("signed in to a server that is not there")
 	}
 }
+
+type plainSession struct {
+	authed *atomic.Bool
+}
+
+func (s plainSession) AuthMechanisms() []string { return []string{sasl.Plain} }
+func (s plainSession) Auth(string) (sasl.Server, error) {
+	return sasl.NewPlainServer(func(_, _, _ string) error {
+		s.authed.Store(true)
+		return nil
+	}), nil
+}
+func (plainSession) Mail(string, *smtp.MailOptions) error { return nil }
+func (plainSession) Rcpt(string, *smtp.RcptOptions) error { return nil }
+func (plainSession) Data(r io.Reader) error               { _, err := io.ReadAll(r); return err }
+func (plainSession) Reset()                               {}
+func (plainSession) Logout() error                        { return nil }
+
+func TestTokenIsNotSentToAServerWithoutSTARTTLS(t *testing.T) {
+	t.Parallel()
+	var authed atomic.Bool
+	s := smtp.NewServer(smtp.BackendFunc(func(*smtp.Conn) (smtp.Session, error) {
+		return plainSession{authed: &authed}, nil
+	}))
+	s.Domain = "127.0.0.1"
+	s.AllowInsecureAuth = true
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.Serve(l)
+	t.Cleanup(func() { s.Close() })
+
+	sub := submission{addr: l.Addr().String(), sender: "hello@example.com", token: testToken}
+	if err := sub.send(context.Background(), "hello@example.com", []byte(testMessage)); err == nil {
+		t.Error("sent through a server without STARTTLS")
+	}
+	if authed.Load() {
+		t.Error("the token went over the wire in the clear")
+	}
+}

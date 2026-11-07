@@ -25,10 +25,11 @@ import (
 
 // hookTransport lets a test hold or rewrite requests to the fake API.
 type hookTransport struct {
-	base    http.RoundTripper
-	down    atomic.Bool
-	request atomic.Pointer[func(*http.Request)]
-	auth    atomic.Pointer[func(map[string]any)]
+	base      http.RoundTripper
+	down      atomic.Bool
+	request   atomic.Pointer[func(*http.Request)]
+	auth      atomic.Pointer[func(map[string]any)]
+	addresses atomic.Pointer[func(map[string]any)]
 }
 
 func (h *hookTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -39,9 +40,18 @@ func (h *hookTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		(*hook)(r)
 	}
 	res, err := h.base.RoundTrip(r)
-	hook := h.auth.Load()
-	if err != nil || hook == nil || r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/auth/v4") || res.StatusCode != http.StatusOK {
+	if err != nil || res.StatusCode != http.StatusOK {
 		return res, err
+	}
+	var hook *func(map[string]any)
+	switch {
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/auth/v4"):
+		hook = h.auth.Load()
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/core/v4/addresses"):
+		hook = h.addresses.Load()
+	}
+	if hook == nil {
+		return res, nil
 	}
 
 	var body map[string]any
@@ -672,7 +682,7 @@ func TestDataFilesArePrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, path := range []string{sessionPath(e.cfg), statusPath(e.cfg), copiesPath(e.cfg)} {
+	for _, path := range []string{sessionPath(e.cfg), sessionPath(e.cfg) + ".lock", statusPath(e.cfg), copiesPath(e.cfg)} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -1372,5 +1382,410 @@ func TestStoppingEndsBeforeDockerKillsTheContainer(t *testing.T) {
 	stop()
 	if took := time.Since(start); took > 10*time.Second {
 		t.Errorf("stopping took %s while a delivery hangs", took.Round(time.Millisecond))
+	}
+}
+
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	return func() string {
+		os.Stderr = stderr
+		w.Close()
+		out, _ := io.ReadAll(r)
+		return string(out)
+	}
+}
+
+func TestLogoutInAnUnusableDataFolderDoesNotBlameProton(t *testing.T) {
+	e := newTestEnv(t)
+	e.cfg.dataDir = filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(e.cfg.dataDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t)
+	err := logout(context.Background(), e.cfg, e.manager())
+	if out := stderr(); strings.Contains(out, "Proton") {
+		t.Errorf("logout blamed Proton for a local folder problem: %q", out)
+	}
+	if err == nil {
+		t.Fatal("logout passed in a data folder that is a file")
+	}
+}
+
+func TestLogoutAsksToEndASessionProtonCouldNotEnd(t *testing.T) {
+	e := newTestEnv(t)
+	e.login()
+	m, hook := e.hookedManager()
+	hook.down.Store(true)
+	stderr := captureStderr(t)
+	err := logout(context.Background(), e.cfg, m)
+	if out := stderr(); !strings.Contains(out, "session list") {
+		t.Errorf("logout did not ask to end the session at Proton: %q", out)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLogoutOfARevokedSessionSaysNothingAboutProton(t *testing.T) {
+	e := newTestEnv(t)
+	e.login()
+	if err := e.server.RevokeUser(e.userID); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t)
+	err := logout(context.Background(), e.cfg, e.manager())
+	if out := stderr(); out != "" {
+		t.Errorf("logout of a revoked session printed %q", out)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sessionPath(e.cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the session is still there: %v", err)
+	}
+}
+
+func TestUnconfirmedMessageIsStillForgottenAfterARestart(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.removalWaits = []time.Duration{time.Second}
+	e.submit.hangUp.Store(true)
+	e.login()
+	mb := newMailbox(e.manager(), e.cfg)
+
+	if _, err := mb.deliver(context.Background(), []string{"hello@example.com"}, []byte(testMessage)); !errors.Is(err, errUnconfirmed) {
+		t.Fatalf("got %v, want errUnconfirmed", err)
+	}
+	close(mb.stopping)
+	mb.removals.Wait()
+	mb.disconnect()
+
+	e.submit.hangUp.Store(false)
+	restarted := newMailbox(e.manager(), e.cfg)
+	defer restarted.disconnect()
+	if err := restarted.check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.status(); got != statusOK {
+		t.Errorf("status is %q after the restart although no copy exists", got)
+	}
+}
+
+func TestVanishedDataFolderDoesNotEndTheSession(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	s, _ := loadSession(sessionPath(e.cfg))
+	mb := newMailbox(e.manager(), e.cfg)
+	defer mb.disconnect()
+	if err := mb.check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := e.cfg.dataDir
+	if err := os.Rename(dir, dir+".away"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mb.check(context.Background()); err == nil {
+		t.Fatal("the check passed without the data folder")
+	}
+	if err := os.Rename(dir+".away", dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if !e.sessionOpen(s.UID) {
+		t.Error("the session was ended at Proton while the data folder was away")
+	}
+	if err := mb.check(context.Background()); err != nil {
+		t.Errorf("once the folder is back: %v", err)
+	}
+}
+
+func TestCheckFailsWhenTheTokenRotatedDuringItCannotBeSaved(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	m, hook := e.hookedManager()
+	defer m.Close()
+	mb := newMailbox(m, e.cfg)
+	defer mb.disconnect()
+	if err := mb.check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := mb.session.RefreshToken
+
+	e.server.SetAuthLife(time.Second)
+	time.Sleep(1500 * time.Millisecond)
+	dir := e.cfg.dataDir
+	unwritable := func(r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/auth/v4/refresh") {
+			hook.request.Store(nil)
+			if err := os.Rename(dir, dir+".away"); err != nil {
+				t.Error(err)
+			}
+			if err := os.WriteFile(dir, nil, 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	hook.request.Store(&unwritable)
+	err := mb.check(context.Background())
+	if mb.session.RefreshToken == before {
+		t.Fatal("the token was not rotated during the check")
+	}
+	if err == nil {
+		t.Error("the check passed although the rotated token could not be saved")
+	}
+
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir+".away", dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := mb.check(context.Background()); err != nil {
+		t.Errorf("once the folder is writable again: %v", err)
+	}
+	if saved, err := loadSession(sessionPath(e.cfg)); err != nil || saved.RefreshToken != mb.session.RefreshToken {
+		t.Errorf("the session file holds %v (%v), not the token in use", saved, err)
+	}
+}
+
+func TestPickAddressSkipsAddressesThatCannotReceive(t *testing.T) {
+	enabled := proton.AddressStatusEnabled
+	addresses := []proton.Address{
+		{ID: "external", Email: "me@gmail.example", Status: enabled, Type: proton.AddressTypeExternal, Send: true, Receive: false, Order: 1},
+		{ID: "own", Email: "hello@example.com", Status: enabled, Type: proton.AddressTypeCustom, Send: true, Receive: true, Order: 2},
+	}
+
+	for _, recipients := range [][]string{{"me@gmail.example"}, {"someone@else.com"}, nil} {
+		got, err := pickAddress(addresses, recipients)
+		if err != nil || got.ID != "own" {
+			t.Errorf("pickAddress(%v) = %s, %v; want own", recipients, got.ID, err)
+		}
+	}
+	if _, err := pickAddress(addresses[:1], nil); err == nil {
+		t.Error("an account whose only address cannot receive gave no error")
+	}
+}
+
+func TestMessageNeverGoesToAnAddressThatCannotReceive(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	second, err := e.server.CreateAddress(e.userID, "second@proton.local", []byte(testPassword), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.login()
+	m, hook := e.hookedManager()
+	external := func(body map[string]any) {
+		for _, addr := range body["Addresses"].([]any) {
+			if a := addr.(map[string]any); a["Email"] == e.submit.sender {
+				a["Type"], a["Receive"] = int(proton.AddressTypeExternal), 0
+			}
+		}
+	}
+	hook.addresses.Store(&external)
+	e.serveBy = m
+	addr := e.serve()
+
+	for _, rcpt := range []string{e.submit.sender, "someone@else.com"} {
+		if err := send(addr, nil, rcpt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	inbox := e.inbox()
+	for _, m := range inbox {
+		if m.AddressID != second {
+			t.Errorf("a message landed under %s, which cannot receive, instead of %s", m.AddressID, second)
+		}
+	}
+	if len(inbox) != 2 {
+		t.Errorf("inbox has %d messages, want 2", len(inbox))
+	}
+}
+
+func TestNewLoginWhileServingEndsTheOldSessionWhenTheLoginCouldNot(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.login()
+	first, _ := loadSession(sessionPath(e.cfg))
+	addr := e.serve()
+
+	m := newManager(proton.WithHostURL(e.server.GetHostURL()), proton.WithTransport(&cannedAPI{base: proton.InsecureTransport(), answer: func(r *http.Request) (int, string, bool) {
+		if !strings.HasSuffix(r.URL.Path, "/auth/v4/refresh") {
+			return 0, "", false
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if strings.Contains(string(body), first.UID) {
+			return 500, `{"Code":500,"Error":"Internal server error"}`, true
+		}
+		return 0, "", false
+	}}))
+	p := &scriptedPrompter{answers: []string{testUser, testPassword}}
+	if err := login(context.Background(), e.cfg, m, p); err != nil {
+		t.Fatal(err)
+	}
+	if !e.sessionOpen(first.UID) {
+		t.Fatal("the login ended the old session although Proton refused the refresh")
+	}
+
+	if err := send(addr, nil, "hello@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if e.sessionOpen(first.UID) {
+		t.Error("the old session is still open at Proton after the server took over the new one")
+	}
+}
+
+func TestRemovalThatWaitsForTheLockGivesUpWhenStopping(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.checkTimeout = 200 * time.Millisecond
+	e.cfg.removalWaits = []time.Duration{10 * time.Millisecond}
+	e.login()
+	m, hook := e.hookedManager()
+	failDelete := func(r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/mail/v4/messages/delete") {
+			r.URL.Path += "-gone"
+		}
+	}
+	hook.request.Store(&failDelete)
+	mb := newMailbox(m, e.cfg)
+	defer mb.disconnect()
+	ctx := context.Background()
+
+	if _, err := mb.deliver(ctx, []string{"hello@example.com"}, []byte(testMessage)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mb.acquire(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer mb.release()
+	time.Sleep(3 * e.cfg.checkTimeout)
+	close(mb.stopping)
+
+	done := make(chan struct{})
+	go func() { mb.removals.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the removal still waits for the lock after the stop")
+	}
+}
+
+// unwritableDuringRefresh answers the first request to retried with a 401 and takes the data folder away while the token rotates.
+func (e *testEnv) unwritableDuringRefresh(retried string) *proton.Manager {
+	e.t.Helper()
+	dir := e.cfg.dataDir
+	var calls atomic.Int32
+	hook := &hookTransport{base: &cannedAPI{base: proton.InsecureTransport(), answer: func(r *http.Request) (int, string, bool) {
+		if !strings.HasSuffix(r.URL.Path, retried) {
+			return 0, "", false
+		}
+		switch calls.Add(1) {
+		case 1:
+			return 401, `{"Code":401,"Error":"Invalid access token"}`, true
+		case 2:
+			if err := os.Remove(dir); err != nil {
+				e.t.Error(err)
+			}
+			if err := os.Rename(dir+".away", dir); err != nil {
+				e.t.Error(err)
+			}
+		}
+		return 0, "", false
+	}}}
+	away := func(r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/auth/v4/refresh") && calls.Load() == 1 {
+			if err := os.Rename(dir, dir+".away"); err != nil {
+				e.t.Error(err)
+			}
+			if err := os.WriteFile(dir, nil, 0o600); err != nil {
+				e.t.Error(err)
+			}
+		}
+	}
+	hook.request.Store(&away)
+	return newManager(proton.WithHostURL(e.server.GetHostURL()), proton.WithTransport(hook))
+}
+
+func TestTokenRotatedDuringADeliveryIsSavedOrReported(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.removalWaits = []time.Duration{time.Second}
+	e.login()
+	m := e.unwritableDuringRefresh("/core/v4/addresses")
+	defer m.Close()
+	mb := newMailbox(m, e.cfg)
+	ctx := context.Background()
+	if err := mb.check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := mb.session.RefreshToken
+
+	if _, err := mb.deliver(ctx, []string{"hello@example.com"}, []byte(testMessage)); err != nil {
+		t.Fatal(err)
+	}
+	close(mb.stopping)
+	mb.removals.Wait()
+	mb.disconnect()
+	if mb.session.RefreshToken == before {
+		t.Fatal("the token was not rotated during the delivery")
+	}
+	saved, err := loadSession(sessionPath(e.cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.RefreshToken != mb.session.RefreshToken && e.status() == statusOK {
+		t.Errorf("the session file holds the old token and the status is %q", e.status())
+	}
+}
+
+func TestTokenRotatedWhileRemovingACopyIsSavedOrReported(t *testing.T) {
+	t.Parallel()
+	e := newTestEnv(t)
+	e.cfg.removalWaits = []time.Duration{10 * time.Millisecond}
+	e.login()
+	m, hook := e.hookedManager()
+	failDelete := func(r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/mail/v4/messages/delete") {
+			r.URL.Path += "-gone"
+		}
+	}
+	hook.request.Store(&failDelete)
+	mb := newMailbox(m, e.cfg)
+	ctx := context.Background()
+	if _, err := mb.deliver(ctx, []string{"hello@example.com"}, []byte(testMessage)); err != nil {
+		t.Fatal(err)
+	}
+	mb.removals.Wait()
+	mb.disconnect()
+	m.Close()
+	if len(mb.unremoved) != 1 {
+		t.Fatalf("%d copies are left, want 1", len(mb.unremoved))
+	}
+
+	mb.manager = e.unwritableDuringRefresh("/mail/v4/messages")
+	defer mb.manager.Close()
+	defer mb.disconnect()
+	err := mb.check(ctx)
+	saved, loadErr := loadSession(sessionPath(e.cfg))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if got := e.sentCopies(); got != 0 {
+		t.Fatalf("%d copies are left under Sent, so the token did not rotate while removing one", got)
+	}
+	if saved.RefreshToken != mb.session.RefreshToken && err == nil {
+		t.Errorf("the session file holds the old token and the check passed with status %q", e.status())
 	}
 }

@@ -41,7 +41,7 @@ docker compose exec forwarder proton_mail_forwarder login
 
 ### Without Docker
 
-It listens on `127.0.0.1:2525` and keeps the session in `~/.config/proton_mail_forwarder`.
+It listens on `127.0.0.1:2525` and keeps the session in `~/.config/proton_mail_forwarder`, on Windows in `%AppData%\proton_mail_forwarder`.
 
 ```sh
 git clone https://github.com/ivenos/proton_mail_forwarder.git

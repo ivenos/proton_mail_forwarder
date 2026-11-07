@@ -23,7 +23,7 @@ docker build -t proton_mail_forwarder:test .
 go test -race ./...
 ```
 
-- The image test starts the container without a session and checks that it listens, refuses mail for now and reports itself unhealthy:
+- The image test starts the container without a session and checks that it listens, refuses mail for now, reports itself unhealthy and stops cleanly:
 
 ```bash
 sh test/image_test.sh proton_mail_forwarder:test
@@ -35,7 +35,7 @@ sh test/image_test.sh proton_mail_forwarder:test
 gofmt -l .
 go vet ./...
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-shellcheck test/image_test.sh .github/scripts/bridge-sync.sh .github/scripts/build-binaries.sh .github/scripts/dockerhub-description.sh
+shellcheck test/image_test.sh .github/scripts/bridge-sync.sh .github/scripts/build-binaries.sh .github/scripts/changelog.sh .github/scripts/dockerhub-description.sh
 ```
 
 - CI runs all of it, the tests also on Windows and the image test on amd64 and arm64, before anything is published.

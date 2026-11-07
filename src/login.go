@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 
 	"github.com/ProtonMail/go-proton-api"
@@ -89,7 +90,12 @@ func login(ctx context.Context, cfg config, m *proton.Manager, p prompter) error
 func logout(ctx context.Context, cfg config, m *proton.Manager) error {
 	defer m.Close()
 
-	s, err := loadSession(sessionPath(cfg))
+	unlock, err := lockSession(sessionPath(cfg))
+	if err != nil {
+		return err
+	}
+	s, err := readSession(sessionPath(cfg))
+	unlock()
 	if errors.Is(err, os.ErrNotExist) {
 		return errors.New("not signed in")
 	}
@@ -146,6 +152,25 @@ func (t *terminalPrompter) askSecret(question string) ([]byte, error) {
 		line, err := t.line(question)
 		return []byte(line), err
 	}
+
+	state, err := term.GetState(fd)
+	if err != nil {
+		return nil, err
+	}
+	interrupted := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	defer close(done)
+	signal.Notify(interrupted, os.Interrupt)
+	defer signal.Stop(interrupted)
+	go func() {
+		select {
+		case <-interrupted:
+			term.Restore(fd, state)
+			fmt.Println()
+			os.Exit(130)
+		case <-done:
+		}
+	}()
 
 	fmt.Print(question + ": ")
 	secret, err := term.ReadPassword(fd)
