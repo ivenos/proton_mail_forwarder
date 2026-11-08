@@ -21,6 +21,10 @@ All notable changes to this project are documented in this file, in the format o
 - Pressing Ctrl-C at the password prompt no longer leaves the terminal without echo.
 - `logout` no longer blames Proton when the data folder cannot be used.
 
+### Dependencies
+
+- github.com/emersion/go-smtp v0.25.0 -> v0.25.1
+
 ## [1.0.0] - 2026-10-31
 
 ### Added
