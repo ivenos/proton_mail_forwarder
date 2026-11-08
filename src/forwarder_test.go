@@ -328,6 +328,7 @@ func TestSentCopyOfAMessageThatTimedOutIsRemoved(t *testing.T) {
 	e := newTestEnv(t)
 	e.cfg.deliveryTimeout = time.Second
 	e.submit.delay = 2 * time.Second
+	e.cfg.removalWaits = append(e.cfg.removalWaits, 2*time.Second, 4*time.Second)
 	e.login()
 	addr := e.serve()
 
