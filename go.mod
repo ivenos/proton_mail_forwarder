@@ -15,7 +15,7 @@ require (
 	github.com/emersion/go-smtp v0.25.1
 	github.com/go-resty/resty/v2 v2.17.2
 	golang.org/x/net v0.62.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.47.0
 )
 

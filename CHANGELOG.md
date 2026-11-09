@@ -24,6 +24,7 @@ All notable changes to this project are documented in this file, in the format o
 ### Dependencies
 
 - github.com/emersion/go-smtp v0.25.0 -> v0.25.1
+- golang.org/x/sys v0.49.0 -> v0.50.0
 
 ## [1.0.0] - 2026-10-31
 
