@@ -1,4 +1,4 @@
-FROM alpine:3.24.3
+FROM alpine:3.24.4
 
 ARG TARGETARCH
 COPY --chmod=755 dist/proton_mail_forwarder-linux-${TARGETARCH} /usr/local/bin/proton_mail_forwarder

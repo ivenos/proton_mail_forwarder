@@ -2,7 +2,7 @@ module github.com/ivenos/proton_mail_forwarder
 
 go 1.26.1
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 replace github.com/go-resty/resty/v2 => github.com/ProtonMail/resty/v2 v2.0.0-20250929142426-e3dc6308c80b
 
