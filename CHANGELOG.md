@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file, in the format o
 
 ## [Unreleased]
 
+### Dependencies
+
+- golang.org/x/term v0.47.0 -> v0.48.0
+
 ## [1.1.0] - 2026-11-12
 
 ### Added
