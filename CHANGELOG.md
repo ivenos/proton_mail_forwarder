@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file, in the format o
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-12
+
 ### Added
 
 - Apps can send from addresses with umlauts or other characters outside ASCII.
@@ -23,10 +25,10 @@ All notable changes to this project are documented in this file, in the format o
 
 ### Dependencies
 
-- github.com/emersion/go-smtp v0.25.0 -> v0.25.1
-- golang.org/x/sys v0.49.0 -> v0.50.0
-- alpine 3.24.3 -> 3.24.4
-- go 1.27.3 -> 1.27.4
+- github.com/emersion/go-smtp v0.25.0 -> v0.25.1 (#3)
+- golang.org/x/sys v0.49.0 -> v0.50.0 (#4)
+- alpine 3.24.3 -> 3.24.4 (#5)
+- go 1.27.3 -> 1.27.4 (#5)
 
 ## [1.0.0] - 2026-10-31
 
@@ -40,5 +42,6 @@ All notable changes to this project are documented in this file, in the format o
 - Each new Proton Mail Bridge release is followed on its own.
 - An image for amd64 and arm64 on Docker Hub.
 
-[Unreleased]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ivenos/proton_mail_forwarder/releases/tag/v1.0.0
