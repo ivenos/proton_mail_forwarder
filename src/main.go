@@ -19,7 +19,7 @@ import (
 )
 
 // bridgeVersion is the Proton Mail Bridge release whose API client and app version this build follows.
-const bridgeVersion = "3.27.1"
+const bridgeVersion = "3.27.2"
 
 var version = "dev"
 

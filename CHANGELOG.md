@@ -8,6 +8,7 @@ All notable changes to this project are documented in this file, in the format o
 
 - golang.org/x/term v0.47.0 -> v0.48.0
 - github.com/emersion/go-smtp v0.25.1 -> v0.26.0
+- proton-bridge 3.27.1 -> 3.27.2
 
 ## [1.1.0] - 2026-11-12
 
