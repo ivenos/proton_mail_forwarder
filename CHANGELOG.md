@@ -4,10 +4,12 @@ All notable changes to this project are documented in this file, in the format o
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-17
+
 ### Dependencies
 
-- golang.org/x/term v0.47.0 -> v0.48.0
-- github.com/emersion/go-smtp v0.25.1 -> v0.26.0
+- golang.org/x/term v0.47.0 -> v0.48.0 (#6)
+- github.com/emersion/go-smtp v0.25.1 -> v0.26.0 (#7)
 - proton-bridge 3.27.1 -> 3.27.2
 
 ## [1.1.0] - 2026-11-12
@@ -48,6 +50,7 @@ All notable changes to this project are documented in this file, in the format o
 - Each new Proton Mail Bridge release is followed on its own.
 - An image for amd64 and arm64 on Docker Hub.
 
-[Unreleased]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ivenos/proton_mail_forwarder/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ivenos/proton_mail_forwarder/releases/tag/v1.0.0
