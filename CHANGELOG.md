@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file, in the format o
 
 ## [Unreleased]
 
+### Dependencies
+
+- golang.org/x/net v0.62.0 -> v0.63.0
+
 ## [1.1.1] - 2026-11-17
 
 ### Dependencies
